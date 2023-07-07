@@ -6,3 +6,6 @@ type LinkbaseAPI interface {
 	Delete()
 	Select()
 }
+
+type LinkbaseManagerAPI interface {
+}
