@@ -19,11 +19,22 @@ type command interface {
 	execute(args []string, flags *flag.FlagSet)
 }
 
-// RunLinkbaseMaster run linkbase master
+// RunLinkbaseMaster main linkbase master
 func RunLinkbaseMaster(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, usageCommand)
 		return
 	}
+	cmd := args[1]
+	flags := flag.NewFlagSet(args[0], flag.ExitOnError)
+	flags.Usage = func() {
+		fmt.Fprintf(os.Stderr, usageCommand)
+	}
 
+	var c command
+	switch cmd {
+	case RUM_CMD:
+		c = &run{}
+	}
+	c.execute(args, flags)
 }
