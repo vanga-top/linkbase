@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const RUM_CMD = "run"
+const CMD_RUN = "run"
 
 type run struct {
 }

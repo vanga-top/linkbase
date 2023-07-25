@@ -33,8 +33,10 @@ func RunLinkbaseMaster(args []string) {
 
 	var c command
 	switch cmd {
-	case RUM_CMD:
+	case CMD_RUN:
 		c = &run{}
+	case CMD_UPDATE:
+		c = &update{}
 	}
 	c.execute(args, flags)
 }
