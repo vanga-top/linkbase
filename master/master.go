@@ -19,7 +19,7 @@ type command interface {
 	execute(args []string, flags *flag.FlagSet)
 }
 
-// RunLinkbaseMaster main linkbase master
+// RunLinkbaseMaster main linkbase mastergit
 func RunLinkbaseMaster(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, usageCommand)
