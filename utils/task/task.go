@@ -2,7 +2,7 @@ package task
 
 import "context"
 
-type UniqueID int64
+type UniqueID = int64
 type Timestamp = uint64
 
 type MsgType int32
