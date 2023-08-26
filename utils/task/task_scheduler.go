@@ -155,7 +155,8 @@ func (queue *baseTaskQueue) getMaxTaskNum() int64 {
 	return queue.maxTaskNum
 }
 
-func newBaseTaskQueue(allocator tsoAllocator, maxTaskNum int64) *baseTaskQueue {
+func newBaseTaskQueue(allocator tsoAllocator) *baseTaskQueue {
+	var maxTaskNum int64 //todo
 	return &baseTaskQueue{
 		unissuedTasks:   list.New(),
 		activeTasks:     make(map[UniqueID]task),
@@ -164,6 +165,153 @@ func newBaseTaskQueue(allocator tsoAllocator, maxTaskNum int64) *baseTaskQueue {
 		maxTaskNum:      maxTaskNum,
 		utBufChan:       make(chan int, int(maxTaskNum)),
 		tsoAllocatorIns: allocator,
+	}
+}
+
+type ddTaskQueue struct {
+	*baseTaskQueue
+	lock sync.Mutex
+}
+
+type dmTaskQueue struct {
+	*baseTaskQueue
+	statsLock            sync.RWMutex
+	pChanStatisticsInfos map[pChan]*pChanStatInfo
+}
+
+func (queue *dmTaskQueue) Enqueue(t task) error {
+	dmt := t.(dmlTask)
+	err := dmt.setChannels()
+	if err != nil {
+		log.Warn("setChannels failed when Enqueue", zap.Int64("taskID", t.ID()), zap.Error(err))
+		return err
+	}
+
+	queue.statsLock.Lock()
+	defer queue.statsLock.Unlock()
+	err = queue.baseTaskQueue.Enqueue(t)
+	if err != nil {
+		return err
+	}
+
+	pChannels := dmt.getChannels()
+	queue.commitPChanStats(dmt, pChannels)
+
+	return nil
+}
+
+func (queue *dmTaskQueue) commitPChanStats(dmt dmlTask, pChannels []pChan) {
+	newStats := make(map[pChan]pChanStatistics)
+	beginTs := dmt.BeginTs()
+	endTs := dmt.EndTs()
+	for _, channel := range pChannels {
+		newStats[channel] = pChanStatistics{
+			minTs: beginTs,
+			maxTs: endTs,
+		}
+	}
+
+	for cName, newStat := range newStats {
+		currentStat, ok := queue.pChanStatisticsInfos[cName]
+		if !ok {
+			currentStat = &pChanStatInfo{
+				pChanStatistics: newStat,
+				tsSet: map[Timestamp]struct{}{
+					newStat.minTs: {},
+				},
+			}
+			queue.pChanStatisticsInfos[cName] = currentStat
+		} else {
+			if currentStat.minTs > newStat.minTs {
+				currentStat.minTs = newStat.minTs
+			}
+			if currentStat.maxTs < newStat.maxTs {
+				currentStat.maxTs = newStat.maxTs
+			}
+			currentStat.tsSet[newStat.minTs] = struct{}{}
+		}
+	}
+}
+
+func (queue *dmTaskQueue) PopActiveTask(taskID UniqueID) task {
+	queue.atLock.Lock()
+	defer queue.atLock.Unlock()
+	t, ok := queue.activeTasks[taskID]
+	if ok {
+		queue.statsLock.Lock()
+		defer queue.statsLock.Unlock()
+
+		delete(queue.activeTasks, taskID)
+		log.Debug("Proxy dmTaskQueue popPChanStats", zap.Any("taskID", t.ID()))
+		queue.popPChanStats(t)
+	} else {
+		log.Warn("Proxy task not in active task list!", zap.Any("taskID", taskID))
+	}
+	return t
+}
+
+func (queue *dmTaskQueue) popPChanStats(t task) {
+	channels := t.(dmlTask).getChannels()
+	taskTs := t.BeginTs()
+	for _, cName := range channels {
+		info, ok := queue.pChanStatisticsInfos[cName]
+		if ok {
+			delete(info.tsSet, taskTs)
+			if len(info.tsSet) <= 0 {
+				delete(queue.pChanStatisticsInfos, cName)
+			} else {
+				newMinTs := info.maxTs
+				for ts := range info.tsSet {
+					if newMinTs > ts {
+						newMinTs = ts
+					}
+				}
+				info.minTs = newMinTs
+			}
+		}
+	}
+}
+
+func (queue *dmTaskQueue) getPChanStatsInfo() (map[pChan]*pChanStatistics, error) {
+
+	ret := make(map[pChan]*pChanStatistics)
+	queue.statsLock.RLock()
+	defer queue.statsLock.RUnlock()
+	for cName, info := range queue.pChanStatisticsInfos {
+		ret[cName] = &pChanStatistics{
+			minTs: info.minTs,
+			maxTs: info.maxTs,
+		}
+	}
+	return ret, nil
+}
+
+type dqTaskQueue struct {
+	*baseTaskQueue
+}
+
+func (queue *ddTaskQueue) Enqueue(t task) error {
+	queue.lock.Lock()
+	defer queue.lock.Unlock()
+	return queue.baseTaskQueue.Enqueue(t)
+}
+
+func newDdTaskQueue(tsoAllocatorIns tsoAllocator) *ddTaskQueue {
+	return &ddTaskQueue{
+		baseTaskQueue: newBaseTaskQueue(tsoAllocatorIns),
+	}
+}
+
+func newDmTaskQueue(tsoAllocatorIns tsoAllocator) *dmTaskQueue {
+	return &dmTaskQueue{
+		baseTaskQueue:        newBaseTaskQueue(tsoAllocatorIns),
+		pChanStatisticsInfos: make(map[pChan]*pChanStatInfo),
+	}
+}
+
+func newDqTaskQueue(tsoAllocatorIns tsoAllocator) *dqTaskQueue {
+	return &dqTaskQueue{
+		baseTaskQueue: newBaseTaskQueue(tsoAllocatorIns),
 	}
 }
 

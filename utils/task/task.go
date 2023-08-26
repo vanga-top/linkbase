@@ -27,3 +27,25 @@ type task interface {
 	WaitToFinish() error
 	Notify(err error)
 }
+
+type dmlTask interface {
+	task
+	setChannels() error
+	getChannels() []pChan
+}
+
+// vChan shortcuts for virtual channel.
+type vChan = string
+
+// pChan shortcuts for physical channel.
+type pChan = string
+
+type pChanStatistics struct {
+	minTs Timestamp
+	maxTs Timestamp
+}
+
+type pChanStatInfo struct {
+	pChanStatistics
+	tsSet map[Timestamp]struct{}
+}
