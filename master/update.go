@@ -1,6 +1,8 @@
 package master
 
-import "flag"
+import (
+	"flag"
+)
 
 var CMD_UPDATE = "update"
 
