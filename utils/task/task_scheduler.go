@@ -7,6 +7,8 @@ import (
 	"github.com/linkbase/utils/log"
 	"go.uber.org/zap"
 	"sync"
+
+	"go.opentelemetry.io/otel"
 )
 
 type taskQueue interface {
@@ -313,6 +315,174 @@ func newDqTaskQueue(tsoAllocatorIns tsoAllocator) *dqTaskQueue {
 	return &dqTaskQueue{
 		baseTaskQueue: newBaseTaskQueue(tsoAllocatorIns),
 	}
+}
+
+type taskScheduler struct {
+	ddQueue *ddTaskQueue //ddl task queue
+	dmQueue *dmTaskQueue //dml task queue
+	dqQueue *dqTaskQueue //dql task queue
+
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	//todo msFactory
+
+}
+
+type schedOpt func(scheduler *taskScheduler)
+
+func newTaskScheduler(ctx context.Context, tsoAllocatorIns tsoAllocator, opts ...schedOpt) (*taskScheduler, error) {
+	ctx1, cancel := context.WithCancel(ctx)
+	s := &taskScheduler{
+		ctx:    ctx1,
+		cancel: cancel,
+	}
+	s.ddQueue = newDdTaskQueue(tsoAllocatorIns)
+	s.dmQueue = newDmTaskQueue(tsoAllocatorIns)
+	s.dqQueue = newDqTaskQueue(tsoAllocatorIns)
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s, nil
+}
+
+func (sched *taskScheduler) scheduleDdTask() task {
+	return sched.ddQueue.PopUnissuedTask()
+}
+
+func (sched *taskScheduler) scheduleDmTask() task {
+	return sched.dmQueue.PopUnissuedTask()
+}
+
+func (sched *taskScheduler) scheduleDqTask() task {
+	return sched.dqQueue.PopUnissuedTask()
+}
+
+func (sched *taskScheduler) getTaskByReqID(reqID UniqueID) task {
+	if t := sched.ddQueue.getTaskByReqID(reqID); t != nil {
+		return t
+	}
+	if t := sched.dmQueue.getTaskByReqID(reqID); t != nil {
+		return t
+	}
+	if t := sched.dqQueue.getTaskByReqID(reqID); t != nil {
+		return t
+	}
+	return nil
+}
+
+func (sched *taskScheduler) processTask(t task, q taskQueue) {
+	ctx, span := otel.Tracer("taskQueue").Start(t.TraceCtx(), t.Name())
+	defer span.End()
+
+	span.AddEvent("scheduler process AddActiveTask")
+	q.AddActiveTask(t)
+
+	defer func() {
+		span.AddEvent("scheduler process PopActiveTask")
+		q.PopActiveTask(t.ID())
+	}()
+
+	//pre execute
+	span.AddEvent("scheduler process PreExecute")
+	err := t.PreExecute(ctx)
+
+	defer func() {
+		t.Notify(err)
+	}()
+	if err != nil {
+		span.RecordError(err)
+		log.Ctx(ctx).Warn("Failed to pre-execute task: " + err.Error())
+		return
+	}
+
+	// execute
+	span.AddEvent("scheduler process Execute")
+	err = t.Execute(ctx)
+	if err != nil {
+		span.RecordError(err)
+		log.Ctx(ctx).Warn("Failed to execute task: ", zap.Error(err))
+		return
+	}
+
+	//post execute
+	span.AddEvent("scheduler process PostExecute")
+	err = t.PostExecute(ctx)
+
+	if err != nil {
+		span.RecordError(err)
+		log.Ctx(ctx).Warn("Failed to post-execute task: ", zap.Error(err))
+		return
+	}
+}
+
+func (sched *taskScheduler) definitionLoop() {
+	defer sched.wg.Done()
+	for {
+		select {
+		case <-sched.ctx.Done():
+			return
+		case <-sched.ddQueue.utChan():
+			if !sched.ddQueue.utEmpty() {
+				t := sched.scheduleDdTask()
+				sched.processTask(t, sched.ddQueue)
+			}
+		}
+	}
+}
+
+func (sched *taskScheduler) manipulationLoop() {
+	defer sched.wg.Done()
+	for {
+		select {
+		case <-sched.ctx.Done():
+			return
+		case <-sched.dmQueue.utChan():
+			if !sched.dmQueue.utEmpty() {
+				t := sched.scheduleDmTask()
+				go sched.processTask(t, sched.dmQueue)
+			}
+		}
+	}
+}
+
+func (sched *taskScheduler) queryLoop() {
+	defer sched.wg.Done()
+
+	for {
+		select {
+		case <-sched.ctx.Done():
+			return
+		case <-sched.dqQueue.utChan():
+			if !sched.dqQueue.utEmpty() {
+				t := sched.scheduleDqTask()
+				go sched.processTask(t, sched.dqQueue)
+			} else {
+				log.Debug("query queue is empty ...")
+			}
+		}
+	}
+}
+
+func (sched *taskScheduler) Start() error {
+	sched.wg.Add(1)
+	go sched.definitionLoop()
+
+	sched.wg.Add(1)
+	go sched.manipulationLoop()
+
+	sched.wg.Add(1)
+	go sched.queryLoop()
+
+	return nil
+}
+
+func (sched *taskScheduler) Close() {
+	sched.cancel()
+	sched.wg.Wait()
 }
 
 type tsoAllocator interface {
