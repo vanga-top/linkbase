@@ -332,7 +332,25 @@ type taskScheduler struct {
 
 type schedOpt func(scheduler *taskScheduler)
 
-func newTaskScheduler(ctx context.Context, tsoAllocatorIns tsoAllocator, opts ...schedOpt) (*taskScheduler, error) {
+func newTaskSche(ctx context.Context, tsoAllocatorIns tsoAllocator, opts ...schedOpt) (*taskScheduler, error) {
+	ctx1, cancel := context.WithCancel(ctx)
+	s := &taskScheduler{
+		ctx:    ctx1,
+		cancel: cancel,
+	}
+	s.ddQueue = newDdTaskQueue(tsoAllocatorIns)
+	s.dmQueue = newDmTaskQueue(tsoAllocatorIns)
+	s.dqQueue = newDqTaskQueue(tsoAllocatorIns)
+
+	for _, opt := range opts {
+		opt(s)
+	}
+	return nil, nil
+}
+
+func newTaskScheduler(ctx context.Context,
+	tsoAllocatorIns tsoAllocator,
+	opts ...schedOpt) (*taskScheduler, error) {
 	ctx1, cancel := context.WithCancel(ctx)
 	s := &taskScheduler{
 		ctx:    ctx1,
