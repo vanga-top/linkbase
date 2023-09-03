@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/linkbase/middleware/kv/rocksdb"
 	"github.com/linkbase/utils"
 	"github.com/tecbot/gorocksdb"
 	"sync"
@@ -11,7 +12,7 @@ type retentionInfo struct {
 	topicRetentionTime *utils.ConcurrentMap[string, int64]
 	mutex              sync.RWMutex
 
-	//kv *rocksdbkv.RocksdbKV
+	kv        *rocksdb.RocksdbKV
 	db        *gorocksdb.DB
 	closeCh   chan struct{}
 	closeWg   sync.WaitGroup
