@@ -1,6 +1,16 @@
 package rocksmq
 
-type UniqueID = int64
+import "github.com/linkbase/middleware"
+
+type UniqueID = middleware.UniqueID
+type RmqState = int64
+
+const (
+	// RmqStateStopped state stands for just created or stopped `Rocksmq` instance
+	RmqStateStopped RmqState = 0
+	// RmqStateHealthy state stands for healthy `Rocksmq` instance
+	RmqStateHealthy RmqState = 1
+)
 
 type ProducerMessage struct {
 	Payload    []byte

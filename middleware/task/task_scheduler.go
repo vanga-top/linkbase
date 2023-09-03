@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
-	"github.com/linkbase/utils/log"
+	"github.com/linkbase/middleware/log"
 	"go.uber.org/zap"
 	"sync"
 
