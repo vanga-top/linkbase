@@ -1,11 +1,13 @@
 package server
 
 import (
+	"fmt"
 	"github.com/linkbase/middleware/kv/rocksdb"
 	"github.com/linkbase/middleware/log"
 	"github.com/linkbase/utils"
 	"github.com/tecbot/gorocksdb"
 	"go.uber.org/zap"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -248,7 +250,64 @@ func (ri *retentionInfo) calculateTopicAckedSize(topic string) (int64, error) {
 }
 
 func (ri *retentionInfo) cleanData(topic string, pageEndID UniqueID) error {
+	writeBatch := gorocksdb.NewWriteBatch()
+	defer writeBatch.Destroy()
 
+	pageMsgPrefix := constructKey(PageMsgSizeTitle, topic)
+	fixedAckedTsKey := constructKey(AckedTsTitle, topic)
+	pageStartIDKey := pageMsgPrefix + "/"
+	pageEndIDKey := pageMsgPrefix + "/" + strconv.FormatInt(pageEndID+1, 10)
+	writeBatch.DeleteRange([]byte(pageStartIDKey), []byte(pageEndIDKey))
+
+	pageTsPrefix := constructKey(PageTsTitle, topic)
+	pageTsStartIDKey := pageTsPrefix + "/"
+	pageTsEndIDKey := pageTsPrefix + "/" + strconv.FormatInt(pageEndID+1, 10)
+	writeBatch.DeleteRange([]byte(pageTsStartIDKey), []byte(pageTsEndIDKey))
+
+	ackedStartIDKey := fixedAckedTsKey + "/"
+	ackedEndIDKey := fixedAckedTsKey + "/" + strconv.FormatInt(pageEndID+1, 10)
+	writeBatch.DeleteRange([]byte(ackedStartIDKey), []byte(ackedEndIDKey))
+
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return fmt.Errorf("topic name = %s not exist", topic)
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("get mutex failed, topic name = %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	err := DeleteMessages(ri.db, topic, 0, pageEndID)
+	if err != nil {
+		return err
+	}
+
+	writeOpts := gorocksdb.NewDefaultWriteOptions()
+	defer writeOpts.Destroy()
+	err = ri.kv.DB.Write(writeOpts, writeBatch)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// DeleteMessages in rocksdb by range of [startID, endID)
+func DeleteMessages(db *gorocksdb.DB, topic string, startID, endID UniqueID) error {
+	// Delete msg by range of startID and endID
+	startKey := path.Join(topic, strconv.FormatInt(startID, 10))
+	endKey := path.Join(topic, strconv.FormatInt(endID+1, 10))
+	writeBatch := gorocksdb.NewWriteBatch()
+	defer writeBatch.Destroy()
+	writeBatch.DeleteRange([]byte(startKey), []byte(endKey))
+	opts := gorocksdb.NewDefaultWriteOptions()
+	defer opts.Destroy()
+	err := db.Write(opts, writeBatch)
+	if err != nil {
+		return err
+	}
+	log.Debug("Delete message for topic", zap.String("topic", topic), zap.Int64("startID", startID), zap.Int64("endID", endID))
 	return nil
 }
 
