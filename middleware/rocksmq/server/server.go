@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"github.com/gogo/protobuf/protoc-gen-gogo/generator"
 	"github.com/linkbase/middleware"
 	"github.com/linkbase/middleware/kv"
@@ -166,4 +167,27 @@ func (rmq *RocketMQServer) ExistConsumerGroup(topic, group string) (bool, *rocks
 func (rmq *RocketMQServer) Notify(topic, group string) {
 	//TODO implement me
 	panic("implement me")
+}
+
+/**
+ * Construct current id
+ */
+func constructCurrentID(topicName, groupName string) string {
+	return groupName + "/" + topicName
+}
+
+/**
+ * Combine metaname together with topic
+ */
+func constructKey(metaName, topic string) string {
+	// Check metaName/topic
+	return metaName + topic
+}
+
+func parsePageID(key string) (int64, error) {
+	stringSlice := strings.Split(key, "/")
+	if len(stringSlice) != 3 {
+		return 0, fmt.Errorf("Invalid page id %s ", key)
+	}
+	return strconv.ParseInt(stringSlice[2], 10, 64)
 }
