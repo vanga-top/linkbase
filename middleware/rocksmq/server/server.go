@@ -8,8 +8,11 @@ import (
 	"github.com/linkbase/middleware/kv"
 	"github.com/linkbase/middleware/log"
 	"github.com/linkbase/middleware/rocksmq"
+	"github.com/linkbase/utils/hardware"
+	"github.com/linkbase/utils/paramtable"
 	"github.com/tecbot/gorocksdb"
 	"go.uber.org/zap"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +45,11 @@ const (
 	RmqNotServingErrMsg = "Rocksmq is not serving"
 )
 
+// RocksDB cache size limitation(TODO config it)
+var RocksDBLRUCacheMinCapacity = uint64(1 << 29)
+
+var RocksDBLRUCacheMaxCapacity = uint64(4 << 30)
+
 var topicMu = sync.Map{}
 
 type RocketMQServer struct {
@@ -56,6 +64,25 @@ type RocketMQServer struct {
 	retentionIndo *retentionInfo
 	readers       sync.Map
 	state         rocksmq.RmqState
+}
+
+func NewRocksMQ(name string, idGenerator generator.Generator) (*RocketMQServer, error) {
+	params := paramtable.Get()
+	maxProcs := runtime.GOMAXPROCS(0)
+	parallelism := 1
+	if maxProcs > 32 {
+		parallelism = 4
+	} else if maxProcs > 8 {
+		parallelism = 2
+	}
+	memoryCount := hardware.GetMemoryCount()
+	rocksDBLRUCacheCapacity := RocksDBLRUCacheMinCapacity
+
+	if memoryCount > 0 {
+		ratio := params.RocksmqCfg.LRUCacheRatio.GetAsFloat()
+	}
+
+	return nil, nil
 }
 
 func (rmq *RocketMQServer) isClosed() bool {
