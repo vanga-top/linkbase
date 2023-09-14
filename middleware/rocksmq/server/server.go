@@ -80,7 +80,21 @@ func NewRocksMQ(name string, idGenerator generator.Generator) (*RocketMQServer, 
 
 	if memoryCount > 0 {
 		ratio := params.RocksmqCfg.LRUCacheRatio.GetAsFloat()
+		calculatedCapacity := uint64(float64(memoryCount) * ratio)
+		if calculatedCapacity < RocksDBLRUCacheMinCapacity {
+			rocksDBLRUCacheCapacity = RocksDBLRUCacheMinCapacity
+		} else if calculatedCapacity > RocksDBLRUCacheMaxCapacity {
+			rocksDBLRUCacheCapacity = RocksDBLRUCacheMaxCapacity
+		} else {
+			rocksDBLRUCacheCapacity = calculatedCapacity
+		}
 	}
+
+	log.Debug("Start rocksmq ", zap.Int("max proc", maxProcs),
+		zap.Int("parallism", parallelism), zap.Uint64("lru cache", rocksDBLRUCacheCapacity))
+	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
+	bbto.SetBlockSize(64 << 10)
+	bbto.SetBlockCache(gorocksdb.NewLRUCache(rocksDBLRUCacheCapacity))
 
 	return nil, nil
 }

@@ -19,3 +19,9 @@ func JSONToMap(mStr string) (map[string]string, error) {
 	}
 	return ret, nil
 }
+
+func MapToJSON(m map[string]string) []byte {
+	// error won't happen here.
+	bs, _ := json.Marshal(m)
+	return bs
+}
