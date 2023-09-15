@@ -18,9 +18,9 @@ type ProducerMessage struct {
 }
 
 type Consumer struct {
-	Topic    string
-	group    string
-	MsgMutex chan struct{}
+	Topic     string
+	GroupName string
+	MsgMutex  chan struct{}
 }
 
 type ConsumerMessage struct {

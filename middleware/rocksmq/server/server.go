@@ -45,6 +45,16 @@ const (
 	RmqNotServingErrMsg = "Rocksmq is not serving"
 )
 
+// RmqState Rocksmq state
+type RmqState = int64
+
+const (
+	// RmqStateStopped state stands for just created or stopped `Rocksmq` instance
+	RmqStateStopped RmqState = 0
+	// RmqStateHealthy state stands for healthy `Rocksmq` instance
+	RmqStateHealthy RmqState = 1
+)
+
 // RocksDB cache size limitation(TODO config it)
 var RocksDBLRUCacheMinCapacity = uint64(1 << 29)
 
@@ -161,8 +171,22 @@ func (rmq *RocketMQServer) DestroyConsumerGroup(topic, gourp string) error {
 }
 
 func (rmq *RocketMQServer) Close() {
-	//TODO implement me
-	panic("implement me")
+	atomic.StoreInt64(&rmq.state, RmqStateStopped)
+	rmq.stopRetention()
+	rmq.consumers.Range(func(k, v interface{}) bool {
+		for _, consumer := range v.([]*rocksmq.Consumer) {
+			err := rmq.destroyConsumerInternal(consumer.Topic, consumer.GroupName)
+			if err != nil {
+				log.Warn("Failed to destroy consumer group in rocksmq!", zap.Any("topic", consumer.Topic), zap.Any("groupName", consumer.GroupName), zap.Any("error", err))
+			}
+		}
+		return true
+	})
+	rmq.storeMux.Lock()
+	defer rmq.storeMux.Unlock()
+	rmq.kv.Close()
+	rmq.store.Close()
+	log.Info("successfully close...")
 }
 
 func (rmq *RocketMQServer) RegisterConsumer(consumer *rocksmq.Consumer) error {
@@ -208,6 +232,43 @@ func (rmq *RocketMQServer) ExistConsumerGroup(topic, group string) (bool, *rocks
 func (rmq *RocketMQServer) Notify(topic, group string) {
 	//TODO implement me
 	panic("implement me")
+}
+
+func (rmq *RocketMQServer) stopRetention() {
+	if rmq.retentionIndo != nil {
+		rmq.retentionIndo.Stop()
+	}
+}
+
+func (rmq *RocketMQServer) destroyConsumerInternal(topic string, groupName string) error {
+	start := time.Now()
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return fmt.Errorf("topic name = %s not exist", topic)
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("get mutex error, topic= %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	key := constructCurrentID(topic, groupName)
+	rmq.consumersID.Delete(key)
+	if vals, ok := rmq.consumers.Load(topic); ok {
+		consumers := vals.([]*rocksmq.Consumer)
+		for index, v := range consumers {
+			if v.GroupName == groupName {
+				close(v.MsgMutex)
+				consumers = append(consumers[:index], consumers[index+1:]...)
+				rmq.consumers.Store(topic, consumers)
+				break
+			}
+		}
+	}
+	log.Debug("Rocksmq destroy consumer group successfully ", zap.String("topic", topic),
+		zap.String("group", groupName),
+		zap.Int64("elapsed", time.Since(start).Milliseconds()))
+	return nil
 }
 
 /**

@@ -293,6 +293,13 @@ func (ri *retentionInfo) cleanData(topic string, pageEndID UniqueID) error {
 	return nil
 }
 
+func (ri *retentionInfo) Stop() {
+	ri.closeOnce.Do(func() {
+		close(ri.closeCh)
+		ri.closeWg.Wait()
+	})
+}
+
 // DeleteMessages in rocksdb by range of [startID, endID)
 func DeleteMessages(db *gorocksdb.DB, topic string, startID, endID UniqueID) error {
 	// Delete msg by range of startID and endID
