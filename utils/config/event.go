@@ -29,7 +29,7 @@ func newEvent(eventSource, eventType string, key string, value string) *Event {
 func PopulateEvents(source string, currentConfig, updatedConfig map[string]string) ([]*Event, error) {
 	events := make([]*Event, 0)
 
-	// generate create and update event
+	// generator create and update event
 	for key, value := range updatedConfig {
 		currentValue, ok := currentConfig[key]
 		if !ok { // if new configuration introduced
@@ -39,7 +39,7 @@ func PopulateEvents(source string, currentConfig, updatedConfig map[string]strin
 		}
 	}
 
-	// generate delete event
+	// generator delete event
 	for key, value := range currentConfig {
 		_, ok := updatedConfig[key]
 		if !ok { // when old config not present in new config

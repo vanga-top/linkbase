@@ -1,10 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gogo/protobuf/protoc-gen-gogo/generator"
 	"github.com/linkbase/middleware"
+	"github.com/linkbase/middleware/generator"
 	"github.com/linkbase/middleware/kv"
 	"github.com/linkbase/middleware/kv/rocksdb"
 	"github.com/linkbase/middleware/log"
@@ -14,6 +15,7 @@ import (
 	"github.com/linkbase/utils/paramtable"
 	"github.com/tecbot/gorocksdb"
 	"go.uber.org/zap"
+	"path"
 	"runtime"
 	"strconv"
 	"strings"
@@ -229,9 +231,11 @@ func (rmq *RocketMQServer) CreateConsumerGroup(topic, group string) error {
 	return nil
 }
 
-func (rmq *RocketMQServer) DestroyConsumerGroup(topic, gourp string) error {
-	//TODO implement me
-	panic("implement me")
+func (rmq *RocketMQServer) DestroyConsumerGroup(topic, group string) error {
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	return rmq.destroyConsumerInternal(topic, group)
 }
 
 func (rmq *RocketMQServer) Close() {
@@ -289,13 +293,110 @@ func (rmq *RocketMQServer) GetLatestMsg(topic string) (int64, error) {
 }
 
 func (rmq *RocketMQServer) CheckTopicValid(topic string) error {
-	//TODO implement me
-	panic("implement me")
+	// Check if key exists
+	log := log.With(zap.String("topic", topic))
+
+	_, ok := topicMu.Load(topic)
+	if !ok {
+		return fmt.Errorf("failed to get topic= %s", topic)
+	}
+
+	latestMsgID, err := rmq.GetLatestMsg(topic)
+	if err != nil {
+		return err
+	}
+
+	if latestMsgID != DefaultMessageID {
+		return fmt.Errorf("topic is not empty, topic= %s", topic)
+	}
+	log.Info("created topic is empty")
+	return nil
 }
 
 func (rmq *RocketMQServer) Produce(topic string, messages []rocksmq.ProducerMessage) ([]rocksmq.UniqueID, error) {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return nil, errors.New(RmqNotServingErrMsg)
+	}
+	start := time.Now()
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return []UniqueID{}, fmt.Errorf("topic name = %s not exist", topic)
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return []UniqueID{}, fmt.Errorf("get mutex failed, topic name = %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	getLockTime := time.Since(start).Milliseconds()
+	msgLen := len(messages)
+	idStart, idEnd, err := rmq.idGenerator.Gen(uint32(msgLen))
+	if err != nil {
+		return []UniqueID{}, err
+	}
+	allocTime := time.Since(start).Milliseconds()
+	if UniqueID(msgLen) != idEnd-idStart {
+		return []UniqueID{}, errors.New("Obtained id length is not equal that of message")
+	}
+
+	// Insert data to store system
+	batch := gorocksdb.NewWriteBatch()
+	defer batch.Destroy()
+	msgSizes := make(map[UniqueID]int64)
+	msgIDs := make([]UniqueID, msgLen)
+	for i := 0; i < msgLen && idStart+UniqueID(i) < idEnd; i++ {
+		msgID := idStart + UniqueID(i)
+		key := path.Join(topic, strconv.FormatInt(msgID, 10))
+		batch.Put([]byte(key), messages[i].Payload)
+		properties, err := json.Marshal(messages[i].Properties)
+		if err != nil {
+			log.Warn("properties marshal failed",
+				zap.Int64("msgID", msgID),
+				zap.String("topicName", topic),
+				zap.Error(err))
+			return nil, err
+		}
+		pKey := path.Join("properties", topic, strconv.FormatInt(msgID, 10))
+		batch.Put([]byte(pKey), properties)
+		msgIDs[i] = msgID
+		msgSizes[msgID] = int64(len(messages[i].Payload))
+	}
+	opts := gorocksdb.NewDefaultWriteOptions()
+	defer opts.Destroy()
+	err = rmq.store.Write(opts, batch)
+	if err != nil {
+		return []UniqueID{}, err
+	}
+	writeTime := time.Since(start).Milliseconds()
+	if vals, ok := rmq.consumers.Load(topic); ok {
+		for _, v := range vals.([]*rocksmq.Consumer) {
+			select {
+			case v.MsgMutex <- struct{}{}:
+				continue
+			default:
+				continue
+			}
+		}
+	}
+	err = rmq.updatePageInfo(topic, msgIDs, msgSizes)
+	if err != nil {
+		return []UniqueID{}, err
+	}
+
+	getProduceTime := time.Since(start).Milliseconds()
+	if getProduceTime > 200 {
+		log.Warn("rocksmq produce too slowly", zap.String("topic", topic),
+			zap.Int64("get lock elapse", getLockTime),
+			zap.Int64("alloc elapse", allocTime-getLockTime),
+			zap.Int64("write elapse", writeTime-allocTime),
+			zap.Int64("updatePage elapse", getProduceTime-writeTime),
+			zap.Int64("produce total elapse", getProduceTime),
+		)
+	}
+
+	rmq.topicLastID.Store(topic, msgIDs[len(msgIDs)-1])
+	return msgIDs, nil
 }
 
 func (rmq *RocketMQServer) Consume(topic string, group string, n int) ([]rocksmq.ConsumerMessage, error) {
@@ -393,6 +494,42 @@ func (rmq *RocketMQServer) getLatestMsg(topic string) (int64, error) {
 		return DefaultMessageID, err
 	}
 	return msgID, nil
+}
+
+func (rmq *RocketMQServer) updatePageInfo(topic string, msgIDs []UniqueID, msgSizes map[UniqueID]int64) error {
+	params := paramtable.Get()
+	msgSizeKey := MessageSizeTitle + topic
+	msgSizeVal, err := rmq.kv.Load(msgSizeKey)
+	if err != nil {
+		return err
+	}
+	curMsgSize, err := strconv.ParseInt(msgSizeVal, 10, 64)
+	if err != nil {
+		return err
+	}
+	fixedPageSizeKey := constructKey(PageMsgSizeTitle, topic)
+	fixedPageTsKey := constructKey(PageTsTitle, topic)
+	nowTs := strconv.FormatInt(time.Now().Unix(), 10)
+	mutateBuffer := make(map[string]string)
+	for _, id := range msgIDs {
+		msgSize := msgSizes[id]
+		if curMsgSize+msgSize > params.RocksmqCfg.PageSize.GetAsInt64() {
+			// Current page is full
+			newPageSize := curMsgSize + msgSize
+			pageEndID := id
+			// Update page message size for current page. key is page end ID
+			pageMsgSizeKey := fixedPageSizeKey + "/" + strconv.FormatInt(pageEndID, 10)
+			mutateBuffer[pageMsgSizeKey] = strconv.FormatInt(newPageSize, 10)
+			pageTsKey := fixedPageTsKey + "/" + strconv.FormatInt(pageEndID, 10)
+			mutateBuffer[pageTsKey] = nowTs
+			curMsgSize = 0
+		} else {
+			curMsgSize += msgSize
+		}
+	}
+	mutateBuffer[msgSizeKey] = strconv.FormatInt(curMsgSize, 10)
+	err = rmq.kv.MultiSave(mutateBuffer)
+	return err
 }
 
 /**
