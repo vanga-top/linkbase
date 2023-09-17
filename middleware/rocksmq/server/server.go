@@ -156,8 +156,58 @@ func (rmq *RocketMQServer) CreateTopic(topic string) error {
 }
 
 func (rmq *RocketMQServer) DestroyTopic(topic string) error {
-	//TODO implement me
-	panic("implement me")
+	start := time.Now()
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return fmt.Errorf("topic name = %s not exist", topic)
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("get mutex failed, topic name = %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	rmq.consumers.Delete(topic)
+
+	//clean topic data itself
+	fixTopicName := topic + "/"
+	err := rmq.kv.RemoveWithPrefix(fixTopicName)
+	if err != nil {
+		return err
+	}
+	//clean page size info
+	pageMsgSizeKey := constructKey(PageMsgSizeTitle, topic)
+	err = rmq.kv.RemoveWithPrefix(pageMsgSizeKey)
+	if err != nil {
+		return err
+	}
+	//clean page ts info
+	pageMsgTsKey := constructKey(PageTsTitle, topic)
+	err = rmq.kv.RemoveWithPrefix(pageMsgTsKey)
+	if err != nil {
+		return err
+	}
+	// clean acked ts info
+	ackedTsKey := constructKey(AckedTsTitle, topic)
+	err = rmq.kv.RemoveWithPrefix(ackedTsKey)
+	if err != nil {
+		return err
+	}
+	// topic info
+	topicIDKey := TopicIDTitle + topic
+	msgSizeKey := MessageSizeTitle + topic
+	var removedKeys []string
+	removedKeys = append(removedKeys, topicIDKey, msgSizeKey)
+	err = rmq.kv.MultiRemove(removedKeys)
+	if err != nil {
+		return err
+	}
+	//clean up retention info
+	topicMu.Delete(topic)
+	rmq.retentionIndo.topicRetentionTime.GetAndRemove(topic)
+	log.Debug("Rocksmq destroy topic successfully ", zap.String("topic", topic), zap.Int64("elapsed", time.Since(start).Milliseconds()))
+	return nil
 }
 
 func (rmq *RocketMQServer) CreateConsumerGroup(topic, gourp string) error {
