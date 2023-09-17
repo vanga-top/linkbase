@@ -6,8 +6,10 @@ import (
 	"github.com/gogo/protobuf/protoc-gen-gogo/generator"
 	"github.com/linkbase/middleware"
 	"github.com/linkbase/middleware/kv"
+	"github.com/linkbase/middleware/kv/rocksdb"
 	"github.com/linkbase/middleware/log"
 	"github.com/linkbase/middleware/rocksmq"
+	"github.com/linkbase/utils"
 	"github.com/linkbase/utils/hardware"
 	"github.com/linkbase/utils/paramtable"
 	"github.com/tecbot/gorocksdb"
@@ -210,9 +212,21 @@ func (rmq *RocketMQServer) DestroyTopic(topic string) error {
 	return nil
 }
 
-func (rmq *RocketMQServer) CreateConsumerGroup(topic, gourp string) error {
-	//TODO implement me
-	panic("implement me")
+func (rmq *RocketMQServer) CreateConsumerGroup(topic, group string) error {
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	start := time.Now()
+	key := constructCurrentID(topic, group)
+	_, ok := rmq.consumersID.Load(key)
+	if ok {
+		return fmt.Errorf("RMQ CreateConsumerGroup key already exists, key = %s", key)
+	}
+	rmq.consumersID.Store(key, DefaultMessageID)
+	log.Debug("Rocksmq create consumer group successfully ", zap.String("topic", topic),
+		zap.String("group", group),
+		zap.Int64("elapsed", time.Since(start).Milliseconds()))
+	return nil
 }
 
 func (rmq *RocketMQServer) DestroyConsumerGroup(topic, gourp string) error {
@@ -240,13 +254,38 @@ func (rmq *RocketMQServer) Close() {
 }
 
 func (rmq *RocketMQServer) RegisterConsumer(consumer *rocksmq.Consumer) error {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	start := time.Now()
+	if vals, ok := rmq.consumers.Load(consumer.Topic); ok {
+		for _, v := range vals.([]*rocksmq.Consumer) {
+			if v.GroupName == consumer.GroupName {
+				return nil
+			}
+		}
+		consumers := vals.([]*rocksmq.Consumer)
+		consumers = append(consumers, consumer)
+		rmq.consumers.Store(consumer.Topic, consumers)
+	} else {
+		consumers := make([]*rocksmq.Consumer, 1)
+		consumers[0] = consumer
+		rmq.consumers.Store(consumer.Topic, consumers)
+	}
+	log.Debug("Rocksmq register consumer successfully ", zap.String("topic", consumer.Topic), zap.Int64("elapsed", time.Since(start).Milliseconds()))
+	return nil
 }
 
 func (rmq *RocketMQServer) GetLatestMsg(topic string) (int64, error) {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return DefaultMessageID, errors.New(RmqNotServingErrMsg)
+	}
+	msgID, err := rmq.getLatestMsg(topic)
+	if err != nil {
+		return DefaultMessageID, err
+	}
+
+	return msgID, nil
 }
 
 func (rmq *RocketMQServer) CheckTopicValid(topic string) error {
@@ -319,6 +358,41 @@ func (rmq *RocketMQServer) destroyConsumerInternal(topic string, groupName strin
 		zap.String("group", groupName),
 		zap.Int64("elapsed", time.Since(start).Milliseconds()))
 	return nil
+}
+
+func (rmq *RocketMQServer) getLatestMsg(topic string) (int64, error) {
+	readOpts := gorocksdb.NewDefaultReadOptions()
+	defer readOpts.Destroy()
+	iter := rocksdb.NewRocksIterator(rmq.store, readOpts)
+	defer iter.Close()
+
+	prefix := topic + "/"
+	iter.SeekForPrev([]byte(utils.AddOne(prefix)))
+
+	if err := iter.Err(); err != nil {
+		return DefaultMessageID, err
+	}
+
+	if !iter.Valid() {
+		return DefaultMessageID, nil
+	}
+
+	iKey := iter.Key()
+	seekMsgID := string(iKey.Data())
+	if iKey != nil {
+		iKey.Free()
+	}
+
+	// if find message is not belong to current channel, start from 0
+	if !strings.Contains(seekMsgID, prefix) {
+		return DefaultMessageID, nil
+	}
+
+	msgID, err := strconv.ParseInt(seekMsgID[len(topic)+1:], 10, 64)
+	if err != nil {
+		return DefaultMessageID, err
+	}
+	return msgID, nil
 }
 
 /**
