@@ -31,19 +31,19 @@ const (
 
 	kvSuffix = "_meta_kv"
 
-	// topic begin id record a topic is valid, create when topic is created, cleaned up on destroy topic
+	// TopicIDTitle topic begin id record a topic is valid, create when topic is created, cleaned up on destroy topic
 	TopicIDTitle = "topic_id/"
 
-	// message_size/topicName record the current page message size, once current message size > RocksMq size, reset this value and open a new page
+	// MessageSizeTitle message_size/topicName record the current page message size, once current message size > RocksMq size, reset this value and open a new page
 	MessageSizeTitle = "message_size/"
 
-	// page_message_size/topicName/pageId record the endId of each page, it will be purged either in retention or the destroy of topic
+	// PageMsgSizeTitle page_message_size/topicName/pageId record the endId of each page, it will be purged either in retention or the destroy of topic
 	PageMsgSizeTitle = "page_message_size/"
 
-	// page_ts/topicName/pageId, record the page last ts, used for TTL functionality
+	// PageTsTitle page_ts/topicName/pageId, record the page last ts, used for TTL functionality
 	PageTsTitle = "page_ts/"
 
-	// acked_ts/topicName/pageId, record the latest ack ts of each page, will be purged on retention or destroy of the topic
+	// AckedTsTitle acked_ts/topicName/pageId, record the latest ack ts of each page, will be purged on retention or destroy of the topic
 	AckedTsTitle = "acked_ts/"
 
 	RmqNotServingErrMsg = "Rocksmq is not serving"
@@ -399,9 +399,119 @@ func (rmq *RocketMQServer) Produce(topic string, messages []rocksmq.ProducerMess
 	return msgIDs, nil
 }
 
+// Consume steps:
+// 1. Consume n messages from rocksdb
+// 2. Update current_id to the last consumed message
+// 3. Update ack informations in rocksdb
 func (rmq *RocketMQServer) Consume(topic string, group string, n int) ([]rocksmq.ConsumerMessage, error) {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return nil, errors.New(RmqNotServingErrMsg)
+	}
+	start := time.Now()
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return nil, fmt.Errorf("topic name = %s not exist", topic)
+	}
+
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return nil, fmt.Errorf("get mutex failed, topic name = %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	currentID, ok := rmq.getCurrentID(topic, group)
+	if !ok {
+		return nil, fmt.Errorf("currentID of topicName=%s, groupName=%s not exist", topic, group)
+	}
+	lastID, ok := rmq.getLastID(topic)
+	if ok && currentID > lastID {
+		return []rocksmq.ConsumerMessage{}, nil
+	}
+
+	getLockTime := time.Since(start).Milliseconds()
+	readOpts := gorocksdb.NewDefaultReadOptions()
+	defer readOpts.Destroy()
+	prefix := topic + "/"
+	iter := rocksdb.NewRocksIteratorWithUpperBound(rmq.store, utils.AddOne(prefix), readOpts)
+	defer iter.Close()
+
+	var dataKey string
+	if currentID == DefaultMessageID {
+		dataKey = prefix
+	} else {
+		dataKey = path.Join(topic, strconv.FormatInt(currentID, 10))
+	}
+	iter.Seek([]byte(dataKey))
+	consumerMessage := make([]rocksmq.ConsumerMessage, 0, n)
+	offset := 0
+	for ; iter.Valid() && offset < n; iter.Next() {
+		key := iter.Key()
+		val := iter.Value()
+		strKey := string(key.Data())
+		key.Free()
+		offset++
+		msgID, err := strconv.ParseInt(strKey[len(topic)+1:], 10, 64)
+		if err != nil {
+			val.Free()
+			return nil, err
+		}
+		askedProperties := path.Join("properties", topic, strconv.FormatInt(msgID, 10))
+		opts := gorocksdb.NewDefaultReadOptions()
+		defer opts.Destroy()
+		propertiesValue, err := rmq.store.GetBytes(opts, []byte(askedProperties))
+		if err != nil {
+			return nil, err
+		}
+		properties := make(map[string]string)
+		if len(propertiesValue) != 0 {
+			if err = json.Unmarshal(propertiesValue, &properties); err != nil {
+				return nil, err
+			}
+		}
+		msg := rocksmq.ConsumerMessage{
+			MsgID: msgID,
+		}
+		origData := val.Data()
+		dataLen := len(origData)
+		if dataLen == 0 {
+			msg.Payload = nil
+			msg.Properties = nil
+		} else {
+			msg.Payload = make([]byte, dataLen)
+			msg.Properties = properties
+			copy(msg.Payload, origData)
+		}
+		consumerMessage = append(consumerMessage, msg)
+		val.Free()
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	iterTime := time.Since(start).Milliseconds()
+	if len(consumerMessage) == 0 {
+		// log.Debug("RocksMQ: consumerMessage is empty")
+		return consumerMessage, nil
+	}
+
+	newID := consumerMessage[len(consumerMessage)-1].MsgID
+	moveConsumePosTime := time.Since(start).Milliseconds()
+
+	err := rmq.moveConsumePos(topic, group, newID+1)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO add this to monitor metrics
+	getConsumeTime := time.Since(start).Milliseconds()
+	if getConsumeTime > 200 {
+		log.Warn("rocksmq consume too slowly", zap.String("topic", topic),
+			zap.Int64("get lock elapse", getLockTime),
+			zap.Int64("iterator elapse", iterTime-getLockTime),
+			zap.Int64("moveConsumePosTime elapse", moveConsumePosTime-iterTime),
+			zap.Int64("total consume elapse", getConsumeTime))
+	}
+	return consumerMessage, nil
 }
 
 func (rmq *RocketMQServer) Seek(topic, group string, msgID rocksmq.UniqueID) error {
@@ -530,6 +640,53 @@ func (rmq *RocketMQServer) updatePageInfo(topic string, msgIDs []UniqueID, msgSi
 	mutateBuffer[msgSizeKey] = strconv.FormatInt(curMsgSize, 10)
 	err = rmq.kv.MultiSave(mutateBuffer)
 	return err
+}
+
+func (rmq *RocketMQServer) getCurrentID(topic string, group string) (int64, bool) {
+	currentID, ok := rmq.consumersID.Load(constructCurrentID(topic, group))
+	if !ok {
+		return 0, false
+	}
+	return currentID.(int64), true
+
+}
+
+func (rmq *RocketMQServer) getLastID(topic string) (int64, bool) {
+	currentID, ok := rmq.consumersID.Load(topic)
+	if !ok {
+		return 0, false
+	}
+	return currentID.(int64), true
+}
+
+func (rmq *RocketMQServer) moveConsumePos(topic string, group string, msgID UniqueID) error {
+	oldPos, ok := rmq.getCurrentID(topic, group)
+	if !ok {
+		return errors.New("move unknown consumer")
+	}
+
+	if msgID < oldPos {
+		log.Warn("RocksMQ: trying to move Consume position backward",
+			zap.String("topic", topic), zap.String("group", group), zap.Int64("oldPos", oldPos), zap.Int64("newPos", msgID))
+		panic("move consume position backward")
+	}
+
+	//update ack if position move forward
+	err := rmq.updateAckedInfo(topic, group, oldPos, msgID-1)
+	if err != nil {
+		log.Warn("failed to update acked info ", zap.String("topic", topic),
+			zap.String("groupName", group), zap.Error(err))
+		return err
+	}
+
+	rmq.consumersID.Store(constructCurrentID(topic, group), msgID)
+	return nil
+}
+
+// todo
+func (rmq *RocketMQServer) updateAckedInfo(topic string, group string, pos int64, id UniqueID) error {
+
+	return nil
 }
 
 /**

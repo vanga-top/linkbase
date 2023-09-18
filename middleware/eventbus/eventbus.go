@@ -1,5 +1,0 @@
-package eventbus
-
-func test()  {
-
-}
