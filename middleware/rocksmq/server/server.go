@@ -59,7 +59,7 @@ const (
 	RmqStateHealthy RmqState = 1
 )
 
-// RocksDB cache size limitation(TODO config it)
+// RocksDBLRUCacheMinCapacity RocksDB cache size limitation
 var RocksDBLRUCacheMinCapacity = uint64(1 << 29)
 
 var RocksDBLRUCacheMaxCapacity = uint64(4 << 30)
@@ -490,7 +490,6 @@ func (rmq *RocketMQServer) Consume(topic string, group string, n int) ([]rocksmq
 	}
 	iterTime := time.Since(start).Milliseconds()
 	if len(consumerMessage) == 0 {
-		// log.Debug("RocksMQ: consumerMessage is empty")
 		return consumerMessage, nil
 	}
 
@@ -502,7 +501,6 @@ func (rmq *RocketMQServer) Consume(topic string, group string, n int) ([]rocksmq
 		return nil, err
 	}
 
-	// TODO add this to monitor metrics
 	getConsumeTime := time.Since(start).Milliseconds()
 	if getConsumeTime > 200 {
 		log.Warn("rocksmq consume too slowly", zap.String("topic", topic),
@@ -515,23 +513,86 @@ func (rmq *RocketMQServer) Consume(topic string, group string, n int) ([]rocksmq
 }
 
 func (rmq *RocketMQServer) Seek(topic, group string, msgID rocksmq.UniqueID) error {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	/* Step I: Check if key exists */
+	ll, ok := topicMu.Load(topic)
+	if !ok {
+		return fmt.Errorf("topic %s not exist, %w", topic, errors.New("topic is not exit"))
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("get mutex failed, topic name = %s", topic)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	err := rmq.seek(topic, group, msgID)
+	if err != nil {
+		return err
+	}
+	log.Debug("successfully seek", zap.String("topic", topic), zap.String("group", group), zap.Uint64("msgId", uint64(msgID)))
+	return nil
 }
 
 func (rmq *RocketMQServer) SeekToLatest(topic, group string) error {
-	//TODO implement me
-	panic("implement me")
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	rmq.storeMux.Lock()
+	defer rmq.storeMux.Unlock()
+
+	key := constructCurrentID(topic, group)
+	_, ok := rmq.consumersID.Load(key)
+	if !ok {
+		return fmt.Errorf("ConsumerGroup %s, channel %s not exists", group, topic)
+	}
+
+	msgID, err := rmq.getLatestMsg(topic)
+	if err != nil {
+		return err
+	}
+
+	// current msgID should not be included
+	err = rmq.moveConsumePos(topic, group, msgID+1)
+	if err != nil {
+		return err
+	}
+
+	log.Debug("successfully seek to latest", zap.String("topic", topic),
+		zap.String("group", group), zap.Uint64("latest", uint64(msgID+1)))
+	return nil
 }
 
 func (rmq *RocketMQServer) ExistConsumerGroup(topic, group string) (bool, *rocksmq.Consumer, error) {
-	//TODO implement me
-	panic("implement me")
+	key := constructCurrentID(topic, group)
+	_, ok := rmq.consumersID.Load(key)
+	if ok {
+		if vals, ok := rmq.consumers.Load(topic); ok {
+			for _, v := range vals.([]*rocksmq.Consumer) {
+				if v.GroupName == group {
+					return true, v, nil
+				}
+			}
+		}
+	}
+	return false, nil, nil
 }
 
 func (rmq *RocketMQServer) Notify(topic, group string) {
-	//TODO implement me
-	panic("implement me")
+	if vals, ok := rmq.consumers.Load(topic); ok {
+		for _, v := range vals.([]*rocksmq.Consumer) {
+			if v.GroupName == group {
+				select {
+				case v.MsgMutex <- struct{}{}:
+					continue
+				default:
+					continue
+				}
+			}
+		}
+	}
 }
 
 func (rmq *RocketMQServer) stopRetention() {
@@ -683,10 +744,107 @@ func (rmq *RocketMQServer) moveConsumePos(topic string, group string, msgID Uniq
 	return nil
 }
 
-// todo
-func (rmq *RocketMQServer) updateAckedInfo(topic string, group string, pos int64, id UniqueID) error {
+func (rmq *RocketMQServer) updateAckedInfo(topic string, group string, firstID int64, lastID UniqueID) error {
+	// 1. Try to get the page id between first ID and last ID of ids
+	pageMsgPrefix := constructKey(PageMsgSizeTitle, topic) + "/"
+	readOpts := gorocksdb.NewDefaultReadOptions()
+	defer readOpts.Destroy()
+	pageMsgFirstKey := pageMsgPrefix + strconv.FormatInt(firstID, 10)
 
+	iter := rocksdb.NewRocksIteratorWithUpperBound(rmq.kv.(*rocksdb.RocksdbKV).DB, utils.AddOne(pageMsgPrefix), readOpts)
+	defer iter.Close()
+	var pageIDs []UniqueID
+
+	for iter.Seek([]byte(pageMsgFirstKey)); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		pageID, err := parsePageID(string(key.Data()))
+		if key != nil {
+			key.Free()
+		}
+		if err != nil {
+			return err
+		}
+		if pageID <= lastID {
+			pageIDs = append(pageIDs, pageID)
+		} else {
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	if len(pageIDs) == 0 {
+		return nil
+	}
+	fixedAckedTsKey := constructKey(AckedTsTitle, topic)
+
+	// 2. Update acked ts and acked size for pageIDs
+	if vals, ok := rmq.consumers.Load(topic); ok {
+		consumers, ok := vals.([]*rocksmq.Consumer)
+		if !ok || len(consumers) == 0 {
+			log.Error("update ack with no consumer", zap.String("topic", topic))
+			return nil
+		}
+
+		// find min id of all consumer
+		var minBeginID UniqueID = lastID
+		for _, consumer := range consumers {
+			if consumer.GroupName != group {
+				beginID, ok := rmq.getCurrentID(consumer.Topic, consumer.GroupName)
+				if !ok {
+					return fmt.Errorf("currentID of topicName=%s, groupName=%s not exist", consumer.Topic, consumer.GroupName)
+				}
+				if beginID < minBeginID {
+					minBeginID = beginID
+				}
+			}
+		}
+
+		nowTs := strconv.FormatInt(time.Now().Unix(), 10)
+		ackedTsKvs := make(map[string]string)
+		// update ackedTs, if page is all acked, then ackedTs is set
+		for _, pID := range pageIDs {
+			if pID <= minBeginID {
+				// Update acked info for message pID
+				pageAckedTsKey := path.Join(fixedAckedTsKey, strconv.FormatInt(pID, 10))
+				ackedTsKvs[pageAckedTsKey] = nowTs
+			}
+		}
+		err := rmq.kv.MultiSave(ackedTsKvs)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (rmq *RocketMQServer) seek(topic string, group string, msgID rocksmq.UniqueID) error {
+	rmq.storeMux.Lock()
+	defer rmq.storeMux.Unlock()
+	key := constructCurrentID(topic, group)
+	_, ok := rmq.consumersID.Load(key)
+	if !ok {
+		return fmt.Errorf("ConsumerGroup %s, channel %s not exists", group, topic)
+	}
+	storeKey := path.Join(topic, strconv.FormatInt(msgID, 10))
+	opts := gorocksdb.NewDefaultReadOptions()
+	defer opts.Destroy()
+	val, err := rmq.store.Get(opts, []byte(storeKey))
+	if err != nil {
+		return err
+	}
+
+	defer val.Free()
+	if !val.Exists() {
+		log.Warn("RocksMQ: trying to seek to no exist position, reset current id",
+			zap.String("topic", topic), zap.String("group", group), zap.Int64("msgId", msgID))
+		err := rmq.moveConsumePos(topic, group, DefaultMessageID)
+		//skip seek if key is not found, this is the behavior as pulsar
+		return err
+	}
+	/* Step II: update current_id */
+	err = rmq.moveConsumePos(topic, group, msgID)
+	return err
 }
 
 /**
