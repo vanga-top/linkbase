@@ -99,7 +99,7 @@ func (t *Ticker) Chan() <-chan time.Time {
 	return t.ticker.C
 }
 
-type CachedAllocator struct {
+type CachedGenerator struct {
 	Ctx        context.Context
 	CancelFunc context.CancelFunc
 
@@ -123,52 +123,52 @@ type CachedAllocator struct {
 }
 
 // Start starts the loop of checking whether to synchronize with the global allocator.
-func (ta *CachedAllocator) Start() error {
-	ta.TChan.Init()
-	ta.wg.Add(1)
-	go ta.mainLoop()
+func (cg *CachedGenerator) Start() error {
+	cg.TChan.Init()
+	cg.wg.Add(1)
+	go cg.mainLoop()
 	return nil
 }
 
-func (ta *CachedAllocator) mainLoop() {
-	defer ta.wg.Done()
+func (cg *CachedGenerator) mainLoop() {
+	defer cg.wg.Done()
 
-	loopCtx, loopCancel := context.WithCancel(ta.Ctx)
+	loopCtx, loopCancel := context.WithCancel(cg.Ctx)
 	defer loopCancel()
 
 	for {
 		select {
-		case first := <-ta.ForceSyncChan:
-			ta.SyncReqs = append(ta.SyncReqs, first)
-			pending := len(ta.ForceSyncChan)
+		case first := <-cg.ForceSyncChan:
+			cg.SyncReqs = append(cg.SyncReqs, first)
+			pending := len(cg.ForceSyncChan)
 			for i := 0; i < pending; i++ {
-				ta.SyncReqs = append(ta.SyncReqs, <-ta.ForceSyncChan)
+				cg.SyncReqs = append(cg.SyncReqs, <-cg.ForceSyncChan)
 			}
-			ta.sync(true)
-			ta.finishSyncRequest()
+			cg.sync(true)
+			cg.finishSyncRequest()
 
-		case <-ta.TChan.Chan():
-			ta.pickCanDo()
-			ta.finishRequest()
-			if ta.sync(true) {
-				ta.pickCanDo()
-				ta.finishRequest()
+		case <-cg.TChan.Chan():
+			cg.pickCanDo()
+			cg.finishRequest()
+			if cg.sync(true) {
+				cg.pickCanDo()
+				cg.finishRequest()
 			}
-			ta.failRemainRequest()
+			cg.failRemainRequest()
 
-		case first := <-ta.Reqs:
-			ta.ToDoReqs = append(ta.ToDoReqs, first)
-			pending := len(ta.Reqs)
+		case first := <-cg.Reqs:
+			cg.ToDoReqs = append(cg.ToDoReqs, first)
+			pending := len(cg.Reqs)
 			for i := 0; i < pending; i++ {
-				ta.ToDoReqs = append(ta.ToDoReqs, <-ta.Reqs)
+				cg.ToDoReqs = append(cg.ToDoReqs, <-cg.Reqs)
 			}
-			ta.pickCanDo()
-			ta.finishRequest()
-			if ta.sync(false) {
-				ta.pickCanDo()
-				ta.finishRequest()
+			cg.pickCanDo()
+			cg.finishRequest()
+			if cg.sync(false) {
+				cg.pickCanDo()
+				cg.finishRequest()
 			}
-			ta.failRemainRequest()
+			cg.failRemainRequest()
 
 		case <-loopCtx.Done():
 			return
@@ -176,100 +176,100 @@ func (ta *CachedAllocator) mainLoop() {
 	}
 }
 
-func (ta *CachedAllocator) pickCanDo() {
-	if ta.PickCanDoFunc == nil {
+func (cg *CachedGenerator) pickCanDo() {
+	if cg.PickCanDoFunc == nil {
 		return
 	}
-	ta.PickCanDoFunc()
+	cg.PickCanDoFunc()
 }
 
-func (ta *CachedAllocator) sync(timeout bool) bool {
-	if ta.SyncFunc == nil || ta.CheckSyncFunc == nil {
-		ta.CanDoReqs = ta.ToDoReqs
-		ta.ToDoReqs = nil
+func (cg *CachedGenerator) sync(timeout bool) bool {
+	if cg.SyncFunc == nil || cg.CheckSyncFunc == nil {
+		cg.CanDoReqs = cg.ToDoReqs
+		cg.ToDoReqs = nil
 		return true
 	}
-	if !timeout && len(ta.ToDoReqs) == 0 {
+	if !timeout && len(cg.ToDoReqs) == 0 {
 		return false
 	}
-	if !ta.CheckSyncFunc(timeout) {
+	if !cg.CheckSyncFunc(timeout) {
 		return false
 	}
 
 	var ret bool
-	ret, ta.SyncErr = ta.SyncFunc()
+	ret, cg.SyncErr = cg.SyncFunc()
 
 	if !timeout {
-		ta.TChan.Reset()
+		cg.TChan.Reset()
 	}
 	return ret
 }
 
-func (ta *CachedAllocator) finishSyncRequest() {
-	for _, req := range ta.SyncReqs {
+func (cg *CachedGenerator) finishSyncRequest() {
+	for _, req := range cg.SyncReqs {
 		if req != nil {
 			req.Notify(nil)
 		}
 	}
-	ta.SyncReqs = nil
+	cg.SyncReqs = nil
 }
 
-func (ta *CachedAllocator) failRemainRequest() {
+func (cg *CachedGenerator) failRemainRequest() {
 	var err error
-	if ta.SyncErr != nil {
-		err = fmt.Errorf("%s failRemainRequest err:%w", ta.Role, ta.SyncErr)
+	if cg.SyncErr != nil {
+		err = fmt.Errorf("%s failRemainRequest err:%w", cg.Role, cg.SyncErr)
 	} else {
-		errMsg := fmt.Sprintf("%s failRemainRequest unexpected error", ta.Role)
+		errMsg := fmt.Sprintf("%s failRemainRequest unexpected error", cg.Role)
 		err = errors.New(errMsg)
 	}
-	if len(ta.ToDoReqs) > 0 {
+	if len(cg.ToDoReqs) > 0 {
 		log.Warn("Allocator has some reqs to fail",
-			zap.Any("Role", ta.Role),
-			zap.Any("reqLen", len(ta.ToDoReqs)))
+			zap.Any("Role", cg.Role),
+			zap.Any("reqLen", len(cg.ToDoReqs)))
 	}
-	for _, req := range ta.ToDoReqs {
+	for _, req := range cg.ToDoReqs {
 		if req != nil {
 			req.Notify(err)
 		}
 	}
-	ta.ToDoReqs = nil
+	cg.ToDoReqs = nil
 }
 
-func (ta *CachedAllocator) finishRequest() {
-	for _, req := range ta.CanDoReqs {
+func (cg *CachedGenerator) finishRequest() {
+	for _, req := range cg.CanDoReqs {
 		if req != nil {
-			err := ta.ProcessFunc(req)
+			err := cg.ProcessFunc(req)
 			req.Notify(err)
 		}
 	}
-	ta.CanDoReqs = []Request{}
+	cg.CanDoReqs = []Request{}
 }
 
-func (ta *CachedAllocator) revokeRequest(err error) {
-	n := len(ta.Reqs)
+func (cg *CachedGenerator) revokeRequest(err error) {
+	n := len(cg.Reqs)
 	for i := 0; i < n; i++ {
-		req := <-ta.Reqs
+		req := <-cg.Reqs
 		req.Notify(err)
 	}
 }
 
 // Close mainly stop the internal coroutine and recover resources.
-func (ta *CachedAllocator) Close() {
-	ta.CancelFunc()
-	ta.wg.Wait()
-	ta.TChan.Close()
-	errMsg := fmt.Sprintf("%s is closing", ta.Role)
-	ta.revokeRequest(errors.New(errMsg))
+func (cg *CachedGenerator) Close() {
+	cg.CancelFunc()
+	cg.wg.Wait()
+	cg.TChan.Close()
+	errMsg := fmt.Sprintf("%s is closing", cg.Role)
+	cg.revokeRequest(errors.New(errMsg))
 }
 
 // CleanCache is used to force synchronize with global allocator.
-func (ta *CachedAllocator) CleanCache() {
+func (cg *CachedGenerator) CleanCache() {
 	req := &SyncRequest{
 		BaseRequest: BaseRequest{
 			Done:  make(chan error),
 			Valid: false,
 		},
 	}
-	ta.ForceSyncChan <- req
+	cg.ForceSyncChan <- req
 	_ = req.Wait()
 }
