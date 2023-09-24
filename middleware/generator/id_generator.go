@@ -27,6 +27,8 @@ func NewIDGenerator(ctx context.Context, peerID UniqueID) (*IDGenerator, error) 
 	}
 	g.TChan = &EmptyTicker{}
 	g.CachedGenerator.SyncFunc = g.syncID
+	//todo
+	return g, nil
 }
 
 func (idg *IDGenerator) syncID() (bool, error) {
@@ -34,7 +36,8 @@ func (idg *IDGenerator) syncID() (bool, error) {
 	if need < idg.countPerRPC {
 		need = idg.countPerRPC
 	}
-
+	//todo
+	return true, nil
 }
 
 func (idg *IDGenerator) gatherReqIDCount() uint32 {
