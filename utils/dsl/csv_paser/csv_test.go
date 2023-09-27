@@ -1,4 +1,4 @@
-package parser
+package csv_paser
 
 import (
 	"fmt"

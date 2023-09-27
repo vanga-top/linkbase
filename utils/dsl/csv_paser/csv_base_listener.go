@@ -1,6 +1,6 @@
 // Code generated from CSV.g4 by ANTLR 4.13.1. DO NOT EDIT.
 
-package parser // CSV
+package csv_paser // CSV
 
 import "github.com/antlr4-go/antlr/v4"
 

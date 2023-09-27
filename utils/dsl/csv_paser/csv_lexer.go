@@ -1,6 +1,6 @@
 // Code generated from CSV.g4 by ANTLR 4.13.1. DO NOT EDIT.
 
-package parser
+package csv_paser
 
 import (
 	"fmt"

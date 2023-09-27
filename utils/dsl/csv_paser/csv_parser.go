@@ -1,6 +1,6 @@
 // Code generated from CSV.g4 by ANTLR 4.13.1. DO NOT EDIT.
 
-package parser // CSV
+package csv_paser // CSV
 
 import (
 	"fmt"
@@ -69,7 +69,7 @@ func csvParserInit() {
 }
 
 // CSVParserInit initializes any static state used to implement CSVParser. By default the
-// static state used to implement the parser is lazily initialized during the first call to
+// static state used to implement the csv_paser is lazily initialized during the first call to
 // NewCSVParser(). You can call this function if you wish to initialize the static state ahead
 // of time.
 func CSVParserInit() {
@@ -77,7 +77,7 @@ func CSVParserInit() {
 	staticData.once.Do(csvParserInit)
 }
 
-// NewCSVParser produces a new parser instance for the optional input antlr.TokenStream.
+// NewCSVParser produces a new csv_paser instance for the optional input antlr.TokenStream.
 func NewCSVParser(input antlr.TokenStream) *CSVParser {
 	CSVParserInit()
 	this := new(CSVParser)
@@ -114,7 +114,7 @@ const (
 type ICsvFileContext interface {
 	antlr.ParserRuleContext
 
-	// GetParser returns the parser.
+	// GetParser returns the csv_paser.
 	GetParser() antlr.Parser
 
 	// Getter signatures
@@ -283,7 +283,7 @@ errorExit:
 type IHdrContext interface {
 	antlr.ParserRuleContext
 
-	// GetParser returns the parser.
+	// GetParser returns the csv_paser.
 	GetParser() antlr.Parser
 
 	// Getter signatures
@@ -387,7 +387,7 @@ errorExit:
 type IRowContext interface {
 	antlr.ParserRuleContext
 
-	// GetParser returns the parser.
+	// GetParser returns the csv_paser.
 	GetParser() antlr.Parser
 
 	// Getter signatures
@@ -573,7 +573,7 @@ errorExit:
 type IFieldContext interface {
 	antlr.ParserRuleContext
 
-	// GetParser returns the parser.
+	// GetParser returns the csv_paser.
 	GetParser() antlr.Parser
 
 	// Getter signatures
