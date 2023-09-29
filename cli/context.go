@@ -36,3 +36,15 @@ func (a Args) Get(n int) string {
 func (a Args) First() string {
 	return a.Get(0)
 }
+
+func lookupGlobalFlagSet(name string, ctx *Context) *flag.FlagSet {
+	if ctx.parentContext != nil {
+		ctx = ctx.parentContext
+	}
+	for ; ctx != nil; ctx = ctx.parentContext {
+		if f := ctx.flagSet.Lookup(name); f != nil {
+			return ctx.flagSet
+		}
+	}
+	return nil
+}

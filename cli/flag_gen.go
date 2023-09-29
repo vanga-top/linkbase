@@ -1,12 +1,5 @@
 package cli
 
-import (
-	"flag"
-	"strconv"
-	"time"
-)
-
-package cli
 
 import (
 "flag"
