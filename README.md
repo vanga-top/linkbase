@@ -1,2 +1,2 @@
 # linkbase
-the next generation metric vector database 
+the next generation of module architecture
