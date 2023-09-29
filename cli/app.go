@@ -90,10 +90,10 @@ func (a *App) Setup() {
 
 	if a.Command(helpCommand.Name) == nil {
 		if !a.HideHelpCommand {
-			a.Commands = append(a.Commands,helpCommand)
+			a.Commands = append(a.Commands, helpCommand)
 		}
-		if !a.HideHelp && (helpF) {
-			
+		if !a.HideHelp {
+
 		}
 	}
 }
