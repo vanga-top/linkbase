@@ -262,3 +262,31 @@ func (c Command) startApp(ctx *Context) error {
 
 	return app.RunAsSubcommand(ctx)
 }
+
+// VisibleFlags returns a slice of the Flags with Hidden=false
+func (c Command) VisibleFlags() []Flag {
+	flags := c.Flags
+	if !c.HideHelp && (HelpFlag != BoolFlag{}) {
+		// append help to flags
+		flags = append(
+			flags,
+			HelpFlag,
+		)
+	}
+	return visibleFlags(flags)
+}
+
+// Names returns the names including short names and aliases.
+func (c Command) Names() []string {
+	names := []string{c.Name}
+
+	if c.ShortName != "" {
+		names = append(names, c.ShortName)
+	}
+
+	if !c.HiddenAliases {
+		names = append(names, c.Aliases...)
+	}
+
+	return names
+}

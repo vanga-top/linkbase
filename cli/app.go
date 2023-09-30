@@ -65,6 +65,16 @@ type Author struct {
 	Email string // The Authors email
 }
 
+// String makes Author comply to the Stringer interface, to allow an easy print in the templating process
+func (a Author) String() string {
+	e := ""
+	if a.Email != "" {
+		e = " <" + a.Email + ">"
+	}
+
+	return fmt.Sprintf("%v%v", a.Name, e)
+}
+
 func NewApp() *App {
 	return &App{
 		Name:         filepath.Base(os.Args[0]),
@@ -382,4 +392,35 @@ func compileTime() time.Time {
 		return time.Now()
 	}
 	return info.ModTime()
+}
+
+func (a *App) VisibleFlags() []Flag {
+	return visibleFlags(a.Flags)
+}
+
+func (a *App) VisibleCommands() []Command {
+	ret := []Command{}
+	for _, command := range a.Commands {
+		if !command.Hidden {
+			ret = append(ret, command)
+		}
+	}
+	return ret
+}
+
+func (a *App) VisibleCategories() []*CommandCategory {
+	ret := []*CommandCategory{}
+	for _, category := range a.categories {
+		if visible := func() *CommandCategory {
+			for _, command := range category.Commands {
+				if !command.Hidden {
+					return category
+				}
+			}
+			return nil
+		}(); visible != nil {
+			ret = append(ret, visible)
+		}
+	}
+	return ret
 }

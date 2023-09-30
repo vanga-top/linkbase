@@ -6,6 +6,6 @@ import (
 )
 
 func TestApp_Run(t *testing.T) {
-	err := NewApp().Run([]string{"server"})
+	err := NewApp().Run([]string{"server", "-h"})
 	assert.Equal(t, nil, err)
 }
