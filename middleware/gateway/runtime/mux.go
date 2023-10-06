@@ -1,8 +1,14 @@
 package runtime
 
-import "net/http"
+import (
+	"context"
+	"google.golang.org/protobuf/proto"
+	"net/http"
+)
 
 type ServeMux struct {
+	handlers               map[string][]handler
+	forwardResponseOptions []func(context.Context, http.ResponseWriter, proto.Message)
 }
 
 type ServeMuxOption func(mux *ServeMux)
