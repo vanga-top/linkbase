@@ -17,3 +17,19 @@ type Decoder interface {
 type Encoder interface {
 	Encode(v interface{}) error
 }
+
+type DecoderFunc func(v interface{}) error
+
+func (f DecoderFunc) Decode(v interface{}) error {
+	return f(v)
+}
+
+type EncoderFunc func(v interface{}) error
+
+func (f EncoderFunc) Encode(v interface{}) error {
+	return f(v)
+}
+
+type Delimited interface {
+	Delimiter() []byte
+}
