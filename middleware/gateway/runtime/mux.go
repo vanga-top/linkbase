@@ -43,7 +43,7 @@ type ServeMux struct {
 	streamErrorHandler        StreamErrorHandlerFunc
 	routingErrorHandler       RoutingErrorHandlerFunc
 	disablePathLengthFallback bool
-	UnescapingMode
+	unescapingMode            UnescapingMode
 }
 
 func NewServerMux(opts ...ServeMuxOption) *ServeMux {
@@ -51,6 +51,7 @@ func NewServerMux(opts ...ServeMuxOption) *ServeMux {
 		handlers:               make(map[string][]handler),
 		forwardResponseOptions: make([]func(context.Context, http.ResponseWriter, proto.Message) error, 0),
 		marshalers:             makeMarshalerMIMERegistry(),
+		unescapingMode:         UnescapingModeDefault,
 	}
 	return serveMux
 }
