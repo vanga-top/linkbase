@@ -58,6 +58,4 @@ func DefaultHttpErrorHandler(ctx context.Context, mux *ServeMux, marshaler Marsh
 		grpclog.Infof("Failed to extract ServerMetadata from context")
 	}
 
-
-
 }
