@@ -51,6 +51,9 @@ func NewServerMux(opts ...ServeMuxOption) *ServeMux {
 		handlers:               make(map[string][]handler),
 		forwardResponseOptions: make([]func(context.Context, http.ResponseWriter, proto.Message) error, 0),
 		marshalers:             makeMarshalerMIMERegistry(),
+		errorHandler:           DefaultHttpErrorHandler,
+		streamErrorHandler:     DefaultStreamErrorHandler,
+		routingErrorHandler:    DefaultRoutingErrorHandler,
 		unescapingMode:         UnescapingModeDefault,
 	}
 	return serveMux
