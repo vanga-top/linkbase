@@ -5,6 +5,24 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// MetadataHeaderPrefix is the http prefix that represents custom metadata
+// parameters to or from a gRPC call.
+const MetadataHeaderPrefix = "Grpc-Metadata-"
+
+// MetadataPrefix is prepended to permanent HTTP header keys (as specified
+// by the IANA) when added to the gRPC context.
+const MetadataPrefix = "grpcgateway-"
+
+// MetadataTrailerPrefix is prepended to gRPC metadata as it is converted to
+// HTTP headers in a response handled by grpc-gateway
+const MetadataTrailerPrefix = "Grpc-Trailer-"
+
+const metadataGrpcTimeout = "Grpc-Timeout"
+const metadataHeaderBinarySuffix = "-Bin"
+
+const xForwardedFor = "X-Forwarded-For"
+const xForwardedHost = "X-Forwarded-Host"
+
 // ServerMetadata consists of metadata sent from gRPC server.
 type ServerMetadata struct {
 	HeaderMD  metadata.MD
