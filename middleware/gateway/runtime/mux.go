@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 	"net/http"
+	"net/textproto"
+	"strings"
 )
 
 // UnescapingMode defines the behavior of ServeMux when unescaping path parameters.
@@ -56,7 +59,32 @@ func NewServerMux(opts ...ServeMuxOption) *ServeMux {
 		routingErrorHandler:    DefaultRoutingErrorHandler,
 		unescapingMode:         UnescapingModeDefault,
 	}
+
+	for _, opt := range opts {
+		opt(serveMux)
+	}
+
+	if serveMux.incomingHeaderMatcher == nil {
+		serveMux.incomingHeaderMatcher = DefaultHeaderMatcher
+	}
+
+	if serveMux.outgoingHeaderMatcher == nil {
+		serveMux.outgoingHeaderMatcher = func(key string) (string, bool) {
+			return fmt.Sprintf("%s%s", MetadataHeaderPrefix, key), true
+		}
+	}
+
 	return serveMux
+}
+
+func DefaultHeaderMatcher(key string) (string, bool) {
+	switch key = textproto.CanonicalMIMEHeaderKey(key); {
+	case isPermanentHTTPHeader(key):
+		return MetadataPrefix + key, true
+	case strings.HasPrefix(key, MetadataHeaderPrefix):
+		return key[len(MetadataHeaderPrefix):], true
+	}
+	return "", false
 }
 
 type ServeMuxOption func(mux *ServeMux)
